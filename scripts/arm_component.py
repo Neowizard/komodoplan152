@@ -20,17 +20,24 @@ class KomodoArmComp:
     update_knowledge_client = None
     clear_costmaps_client = None
     dispatch_subscriber = None
+    debug_level = 1
 
     # TODO: Add timeout checks after long actions like database queries or arm movements
 
     def __init__(self):
         fname = "{}::{}".format(self.__class__.__name__, self.__init__.__name__)
 
+        log_level = rospy.INFO
+        if (self.debug_level > 0):
+            log_level = rospy.DEBUG
+            
+        rospy.init_node("KomodoArmComp", anonymous=False, log_level=log_level)
+
         self.message_store = mongodb_store.message_store.MessageStoreProxy()
         self.update_knowledge_client = rospy.ServiceProxy("/kcl_rosplan/update_knowledge_base", KnowledgeUpdateService)
 
         self.dispatch_subscriber = rospy.Subscriber("/kcl_rosplan/action_dispatch", ActionDispatch,
-                                               move_base.dispatch_callback, queue_size=1000)
+                                               self.dispatch_callback, queue_size=1000)
 
         rospy.logdebug("{}: Arm Component initialized".format(fname))
 
@@ -45,7 +52,6 @@ class KomodoArmComp:
             self.handle_put_down(action_dispatch_msg)
         else:
             rospy.logdebug("{}: Ignoring message".format(fname))
-
 
     def handle_pick_up(self, pick_up_msg):
         fname = "{}::{}".format(self.__class__.__name__, self.handle_pick_up.__name__)
@@ -76,7 +82,7 @@ class KomodoArmComp:
 
             # TODO: Move arm
 
-            # TODO: Release block
+            # TODO: Grab block
 
             # TODO: Rise arm
 
@@ -111,7 +117,7 @@ class KomodoArmComp:
 
             # TODO: Move arm
 
-            # TODO: Grab block
+            # TODO: Release block
 
             # TODO: Rise arm
 
@@ -188,13 +194,7 @@ class KomodoArmComp:
 
 if __name__ == '__main__':
     try:
-        rospy.init_node("Fuckit", anonymous=False, log_level=rospy.DEBUG)
-
-        action_server_param = rospy.get_param("action_server", "/move_base")
-
-        move_base = RPMoveBase(action_server_param)
-
-        rospy.loginfo("KCL: (Fuckit) Ready to receive")
+        move_base = KomodoArmComp()
 
         rospy.spin()
 
