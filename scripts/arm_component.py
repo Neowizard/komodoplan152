@@ -3,7 +3,7 @@ import rospy
 import mongodb_store.message_store
 
 from komodo_blockworld.msg import BlockPos
-
+from std_msgs.msg import Float64
 from diagnostic_msgs.msg import KeyValue
 from rosplan_dispatch_msgs.msg import ActionDispatch
 from rosplan_dispatch_msgs.msg import ActionFeedback
@@ -11,6 +11,10 @@ from rosplan_knowledge_msgs.msg import KnowledgeItem
 from rosplan_knowledge_msgs.srv import KnowledgeUpdateServiceRequest
 from rosplan_knowledge_msgs.srv import KnowledgeUpdateServiceResponse
 from rosplan_knowledge_msgs.srv import KnowledgeUpdateService
+
+default_values = {
+    "raised_shoulder_angle": 1
+}
 
 
 class KomodoArmComp:
@@ -30,14 +34,14 @@ class KomodoArmComp:
         log_level = rospy.INFO
         if (self.debug_level > 0):
             log_level = rospy.DEBUG
-            
+
         rospy.init_node("KomodoArmComp", anonymous=False, log_level=log_level)
 
         self.message_store = mongodb_store.message_store.MessageStoreProxy()
         self.update_knowledge_client = rospy.ServiceProxy("/kcl_rosplan/update_knowledge_base", KnowledgeUpdateService)
 
         self.dispatch_subscriber = rospy.Subscriber("/kcl_rosplan/action_dispatch", ActionDispatch,
-                                               self.dispatch_callback, queue_size=1000)
+                                                    self.dispatch_callback, queue_size=1000)
 
         rospy.logdebug("{}: Arm Component initialized".format(fname))
 
@@ -80,11 +84,11 @@ class KomodoArmComp:
             actionFeedback.status = "action enabled"
             self.action_feedback_pub.publish(actionFeedback)
 
-            # TODO: Move arm
+            self.move_arm(target_block_pos.tablePos, target_block_pos.level+1)
 
             # TODO: Grab block
 
-            # TODO: Rise arm
+            self.rise_arm()
 
             self.apply_effects_to_KMS(block_name, from_block_name, pick_up_msg.name)
 
@@ -115,13 +119,23 @@ class KomodoArmComp:
             actionFeedback.status = "action enabled"
             self.action_feedback_pub.publish(actionFeedback)
 
-            # TODO: Move arm
+            self.move_arm(block_pos.tablePos, block_pos.level)
 
             # TODO: Release block
 
-            # TODO: Rise arm
+            self.rise_arm()
 
             self.apply_effects_to_KMS(block_name, on_block_name, put_down_msg.name)
+
+    def move_arm(self, table_pos, param):
+        #TODO: Calculate joint angles for movement
+        pass
+
+    def rise_arm(self):
+        shoulder_publisher = rospy.Publisher("/komodo_1/shoulder_controller/command", Float64, queue_size=10)
+        shoulder_angle = Float64()
+        shoulder_angle.data = default_values["raised_shoulder_angle"]
+        shoulder_publisher.publish(shoulder_angle)
 
     def get_parameter_values(self, parameters, first_param, second_param):
         block_name = None
@@ -136,16 +150,16 @@ class KomodoArmComp:
     def apply_effects_to_KMS(self, block_name, other_block_name, action):
 
         emptyhand_update_type = KnowledgeUpdateServiceRequest.REMOVE_KNOWLEDGE if \
-                                (action == "pick_up") else KnowledgeUpdateServiceRequest.ADD_KNOWLEDGE
+            (action == "pick_up") else KnowledgeUpdateServiceRequest.ADD_KNOWLEDGE
 
         onblock_update_type = KnowledgeUpdateServiceRequest.REMOVE_KNOWLEDGE if \
-                                (action == "pick_up") else KnowledgeUpdateServiceRequest.ADD_KNOWLEDGE
+            (action == "pick_up") else KnowledgeUpdateServiceRequest.ADD_KNOWLEDGE
 
         clear_update_type = KnowledgeUpdateServiceRequest.ADD_KNOWLEDGE if \
-                                (action == "pick_up") else KnowledgeUpdateServiceRequest.REMOVE_KNOWLEDGE
+            (action == "pick_up") else KnowledgeUpdateServiceRequest.REMOVE_KNOWLEDGE
 
         inhand_update_type = KnowledgeUpdateServiceRequest.ADD_KNOWLEDGE if \
-                                (action == "pick_up") else KnowledgeUpdateServiceRequest.REMOVE_KNOWLEDGE
+            (action == "pick_up") else KnowledgeUpdateServiceRequest.REMOVE_KNOWLEDGE
 
         # Remove emptyhand predicate
         update_knowledge_request = KnowledgeUpdateServiceRequest()
