@@ -374,35 +374,6 @@ class KomodoPicknPlaceComp:
         left_finger_msg.data = default_values["left_finger_released_angle"]
         finger_publisher.publish(left_finger_msg)
 
-    def grip_block(self, level):
-        # level is 1-based in the DB, but needed as 0-based for calculations
-        level -= 1
-
-        finger_publisher = rospy.Publisher("/komodo_1/left_finger_controller/command", Float64, queue_size=10)
-        left_finger_msg = Float64()
-        left_finger_msg.data = default_values["init_left_finger_angle"] + level*default_values["finger_level_offset"]
-        finger_publisher.publish(left_finger_msg)
-
-        rospy.sleep(500)
-
-        finger_publisher = rospy.Publisher("/komodo_1/right_finger_controller/command", Float64, queue_size=10)
-        right_finger_msg = Float64()
-        right_finger_msg.data = default_values["init_right_finger_angle"] + level*default_values["finger_level_offset"]
-        finger_publisher.publish(right_finger_msg)
-
-    def release_grip(self):
-        finger_publisher = rospy.Publisher("/komodo_1/right_finger_controller/command", Float64, queue_size=10)
-        right_finger_msg = Float64()
-        right_finger_msg.data = default_values["right_finger_released_angle"]
-        finger_publisher.publish(right_finger_msg)
-
-        rospy.sleep(500)
-
-        finger_publisher = rospy.Publisher("/komodo_1/left_finger_controller/command", Float64, queue_size=10)
-        left_finger_msg = Float64()
-        left_finger_msg.data = default_values["left_finger_released_angle"]
-        finger_publisher.publish(left_finger_msg)
-
     def get_parameter_values(self, parameters, first_param, second_param):
         block_name = None
         from_block_name = None
