@@ -423,72 +423,80 @@ class KomodoPicknPlaceComp:
             (action_name == "pick_up") else KnowledgeUpdateServiceRequest.REMOVE_KNOWLEDGE
 
         # not_emptyhand predicate
-        update_knowledge_request = KnowledgeUpdateServiceRequest()
-        update_knowledge_request.knowledge.knowledge_type = KnowledgeItem.FACT
-        update_knowledge_request.update_type = not_emptyhand_update_type
-        update_knowledge_request.knowledge.attribute_name = "not_emptyhand"
-        update_response = self.update_knowledge_client.call(update_knowledge_request)
-        rospy.logdebug("{}: Updated KMS with {} {}".format(fname, update_knowledge_request.knowledge.attribute_name, update_knowledge_request.update_type))
+        updated_knowledge = KnowledgeItem()
+        updated_knowledge.knowledge_type = KnowledgeItem.FACT
+        updated_knowledge.attribute_name = "not_emptyhand"
+        update_response = self.update_knowledge_client(not_emptyhand_update_type, updated_knowledge)
+        rospy.logdebug("{}: Updated KMS with {} {}".format(fname, updated_knowledge.attribute_name, not_emptyhand_update_type))
         if (update_response.success is not True):
             rospy.logerr("{}: Could not update KMS with action effect ({} {})".
                          format(fname, not_emptyhand_update_type, "not_emptyhand"))
 
         # emptyhand predicate
-        update_knowledge_request = KnowledgeUpdateServiceRequest()
-        update_knowledge_request.knowledge.knowledge_type = KnowledgeItem.FACT
-        update_knowledge_request.update_type = emptyhand_update_type
-        update_knowledge_request.knowledge.attribute_name = "emptyhand"
-        update_response = self.update_knowledge_client.call(update_knowledge_request)
-        rospy.logdebug("{}: Updated KMS with {} {}".format(fname, update_knowledge_request.knowledge.attribute_name, update_knowledge_request.update_type))
+        updated_knowledge = KnowledgeItem()
+        updated_knowledge.knowledge_type = KnowledgeItem.FACT
+        updated_knowledge.attribute_name = "emptyhand"
+        update_response = self.update_knowledge_client(emptyhand_update_type, updated_knowledge)
+        rospy.logdebug("{}: Updated KMS with {} {}".format(fname, updated_knowledge.attribute_name, emptyhand_update_type))
         if (update_response.success is not True):
             rospy.logerr("{}: Could not update KMS with action effect ({} {})".
                          format(fname, emptyhand_update_type, "emptyhand"))
 
         # (on ?block ?from_block) predicate
-        update_knowledge_request = KnowledgeUpdateServiceRequest()
-        update_knowledge_request.knowledge.knowledge_type = KnowledgeItem.FACT
-        update_knowledge_request.update_type = onblock_update_type
-        update_knowledge_request.knowledge.attribute_name = "on"
+        updated_knowledge = KnowledgeItem()
+        updated_knowledge.knowledge_type = KnowledgeItem.FACT
+        updated_knowledge.attribute_name = "on"
         pair = KeyValue()
         pair.key = "block"
         pair.value = block_name
-        update_knowledge_request.knowledge.values.append(pair)
+        updated_knowledge.values.append(pair)
         pair = KeyValue()
         pair.key = "on_block"
         pair.value = other_block_name
-        update_knowledge_request.knowledge.values.append(pair)
-        self.update_knowledge_client.call(update_knowledge_request)
-        rospy.logdebug("{}: Updated KMS with {} {}".format(fname, update_knowledge_request.knowledge.attribute_name, update_knowledge_request.update_type))
+        updated_knowledge.values.append(pair)
+        update_response = self.update_knowledge_client(onblock_update_type, updated_knowledge)
+        rospy.logdebug("{}: Updated KMS with {} ({}, {}) {}".
+                       format(fname,
+                              updated_knowledge.attribute_name,
+                              updated_knowledge.values[0].value,
+                              updated_knowledge.values[1].value,
+                              onblock_update_type))
         if (update_response.success is not True):
             rospy.logerr("{}: Could not update KMS with action effect ({} {})".
                          format(fname, onblock_update_type, "on"))
 
         # (clear ?from_block) predicate
-        update_knowledge_request = KnowledgeUpdateServiceRequest()
-        update_knowledge_request.knowledge.knowledge_type = KnowledgeItem.FACT
-        update_knowledge_request.update_type = clear_update_type
-        update_knowledge_request.knowledge.attribute_name = "clear"
+        updated_knowledge = KnowledgeItem()
+        updated_knowledge.knowledge_type = KnowledgeItem.FACT
+        updated_knowledge.attribute_name = "clear"
         pair = KeyValue()
-        pair.key = "?block"
+        pair.key = "block"
         pair.value = other_block_name
-        update_knowledge_request.knowledge.values.append(pair)
-        self.update_knowledge_client.call(update_knowledge_request)
-        rospy.logdebug("{}: Updated KMS with {} {}".format(fname, update_knowledge_request.knowledge.attribute_name, update_knowledge_request.update_type))
+        updated_knowledge.values.append(pair)
+        update_response = self.update_knowledge_client(clear_update_type, updated_knowledge)
+        rospy.logdebug("{}: Updated KMS with {} ({}) {}".
+                       format(fname,
+                              updated_knowledge.attribute_name,
+                              updated_knowledge.values[0].value,
+                              clear_update_type))
         if (update_response.success is not True):
             rospy.logerr("{}: Could not update KMS with action effect ({} {})".
                          format(fname, clear_update_type, "clear"))
 
         # (inhand ?block) predicate
-        update_knowledge_request = KnowledgeUpdateServiceRequest()
-        update_knowledge_request.knowledge.knowledge_type = KnowledgeItem.FACT
-        update_knowledge_request.update_type = inhand_update_type
-        update_knowledge_request.knowledge.attribute_name = "inhand"
+        updated_knowledge = KnowledgeItem()
+        updated_knowledge.knowledge_type = KnowledgeItem.FACT
+        updated_knowledge.attribute_name = "inhand"
         pair = KeyValue()
-        pair.key = "?block"
+        pair.key = "block"
         pair.value = block_name
-        update_knowledge_request.knowledge.values.append(pair)
-        self.update_knowledge_client.call(update_knowledge_request)
-        rospy.logdebug("{}: Updated KMS with {} {}".format(fname, update_knowledge_request.knowledge.attribute_name, update_knowledge_request.update_type))
+        updated_knowledge.values.append(pair)
+        update_response = self.update_knowledge_client(inhand_update_type, updated_knowledge)
+        rospy.logdebug("{}: Updated KMS with {} ({}) {}".
+                       format(fname,
+                              updated_knowledge.attribute_name,
+                              updated_knowledge.values[0].value,
+                              inhand_update_type))
         if (update_response.success is not True):
             rospy.logerr("{}: Could not update KMS with action effect ({} {})".
                          format(fname, inhand_update_type, "inhand"))
