@@ -93,7 +93,6 @@ class KomodoPicknPlaceComp:
 
         self.rise_arm()
         rospy.sleep(1.5)
-
         rospy.logdebug("{}: Pick&Place Component initialized".format(fname))
 
         new_block_pos = BlockPos()
@@ -114,23 +113,23 @@ class KomodoPicknPlaceComp:
         self.message_store.update_named("T4", new_block_pos, upsert=True)
 
         new_block_pos = BlockPos()
-        new_block_pos.tablePos = 3
+        new_block_pos.tablePos = 1
         new_block_pos.level = 1
         self.message_store.update_named("A", new_block_pos, upsert=True)
 
         new_block_pos = BlockPos()
-        new_block_pos.tablePos = 3
-        new_block_pos.level = 2
+        new_block_pos.tablePos = 2
+        new_block_pos.level = 1
         self.message_store.update_named("B", new_block_pos, upsert=True)
 
         new_block_pos = BlockPos()
         new_block_pos.tablePos = 3
-        new_block_pos.level = 3
+        new_block_pos.level = 1
         self.message_store.update_named("C", new_block_pos, upsert=True)
 
         new_block_pos = BlockPos()
-        new_block_pos.tablePos = 3
-        new_block_pos.level = 4
+        new_block_pos.tablePos = 4
+        new_block_pos.level = 1
         self.message_store.update_named("D", new_block_pos, upsert=True)
 
     def dispatch_callback(self, action_dispatch_msg):
@@ -187,7 +186,6 @@ class KomodoPicknPlaceComp:
 
             self.rise_arm()
 
-            # TODO: uncomment
             self.apply_effects_to_KMS(block_name, from_block_name, pick_up_msg.name)
 
             # Block is in hand remove it's position from the DB
@@ -240,8 +238,8 @@ class KomodoPicknPlaceComp:
 
             self.rise_arm()
 
-            # TODO: uncomment
             self.apply_effects_to_KMS(block_name, on_block_name, put_down_msg.name)
+
 
             new_block_pos = BlockPos()
             new_block_pos.tablePos = on_block_pos.tablePos
@@ -302,6 +300,7 @@ class KomodoPicknPlaceComp:
         fname = "{}::{}".format(self.__class__.__name__, self.get_base_angle.__name__)
         #TODO: Remove to allow actual table positions count computation
         self.table_positions_count = 4
+
         if (self.table_positions_count < 0):
             rospy.logdebug("{}: Table position count not set, querying database to find it".format(fname))
             # count how many table positions are there (table positions are blocks that are not
@@ -321,6 +320,7 @@ class KomodoPicknPlaceComp:
         max_rotation_angle = default_values["max_base_angle"]
         base_angle = min_rotation_angle + (max_rotation_angle - min_rotation_angle) * \
                                      ((table_pos - 1.0) / (self.table_positions_count - 1.0))
+
 
         rospy.logdebug(
             "{}: Calculated base angle (before offset correction): {}. table pos = {}, table position count = {}".
@@ -370,6 +370,35 @@ class KomodoPicknPlaceComp:
         rospy.sleep(1)
 
         finger_publisher = rospy.Publisher("/komodo_1/left_finger_controller/command", Float64, queue_size=10, latch=True)
+        left_finger_msg = Float64()
+        left_finger_msg.data = default_values["left_finger_released_angle"]
+        finger_publisher.publish(left_finger_msg)
+
+    def grip_block(self, level):
+        # level is 1-based in the DB, but needed as 0-based for calculations
+        level -= 1
+
+        finger_publisher = rospy.Publisher("/komodo_1/left_finger_controller/command", Float64, queue_size=10)
+        left_finger_msg = Float64()
+        left_finger_msg.data = default_values["init_left_finger_angle"] + level*default_values["finger_level_offset"]
+        finger_publisher.publish(left_finger_msg)
+
+        rospy.sleep(500)
+
+        finger_publisher = rospy.Publisher("/komodo_1/right_finger_controller/command", Float64, queue_size=10)
+        right_finger_msg = Float64()
+        right_finger_msg.data = default_values["init_right_finger_angle"] + level*default_values["finger_level_offset"]
+        finger_publisher.publish(right_finger_msg)
+
+    def release_grip(self):
+        finger_publisher = rospy.Publisher("/komodo_1/right_finger_controller/command", Float64, queue_size=10)
+        right_finger_msg = Float64()
+        right_finger_msg.data = default_values["right_finger_released_angle"]
+        finger_publisher.publish(right_finger_msg)
+
+        rospy.sleep(500)
+
+        finger_publisher = rospy.Publisher("/komodo_1/left_finger_controller/command", Float64, queue_size=10)
         left_finger_msg = Float64()
         left_finger_msg.data = default_values["left_finger_released_angle"]
         finger_publisher.publish(left_finger_msg)
