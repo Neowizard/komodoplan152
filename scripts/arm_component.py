@@ -96,6 +96,49 @@ class KomodoPicknPlaceComp:
         rospy.sleep(1.5)
         rospy.logdebug("{}: Pick&Place Component initialized".format(fname))
 
+        prob_blocks = self.instance_query_client.call("block", False)
+        on_predicates = self.attribute_query_client.call("on", False)
+        prob_tables = list()
+
+        # Looking for tables and updating the database
+        currentTablePos = 1
+        for block in prob_blocks:
+            foundOnPredicateForBlock = False
+            for on_predicate in on_predicates:
+                if on_predicate[0] == block:
+                    foundOnPredicateForBlock = True
+                    break
+            if not foundOnPredicateForBlock:
+                new_block_pos = BlockPos()
+                new_block_pos.tablePos = currentTablePos
+                new_block_pos.level = 0
+                self.message_store.update_named(block,new_block_pos,upsert=True)
+                currentTablePos += 1
+                prob_tables.append(block)
+
+        prob_blocks = [block for block in prob_blocks if block not in prob_tables]
+
+        # Updating other blocks (not tables) positions in the database
+        foundBlocks = 0
+        while len(prob_blocks) > foundBlocks:
+            for block in prob_blocks:
+                for on_predicate in on_predicates:
+                    if on_predicate[0] == block:
+                        query_result = self.message_store.query_named(on_predicate[1], "komodo_blockworld/BlockPos", False)
+                        if (query_result is None):
+                            rospy.logfatal("{}: Failed to query DB. Aborting...".format(fname))
+                            return
+                        if (len(query_result) != 1):
+                            rospy.logerr("{}: Found {} blocks named {}. Aborting...".format(fname, len(query_result), on_predicate[1]))
+                            return
+                        if (len(query_result) == 1):
+                            new_block_pos = BlockPos()
+                            new_block_pos.tablePos = query_result[0][0]
+                            new_block_pos.level = query_result[0][1] + 1
+                            self.message_store.update_named(block,new_block_pos,upsert=True)
+                            foundBlocks += 1
+                    break
+        '''
         new_block_pos = BlockPos()
         new_block_pos.tablePos = 1
         new_block_pos.level = 0
@@ -132,6 +175,7 @@ class KomodoPicknPlaceComp:
         new_block_pos.tablePos = 4
         new_block_pos.level = 1
         self.message_store.update_named("D", new_block_pos, upsert=True)
+        '''
 
     def dispatch_callback(self, action_dispatch_msg):
         fname = "{}::{}".format(self.__class__.__name__, self.dispatch_callback.__name__)
@@ -159,6 +203,7 @@ class KomodoPicknPlaceComp:
         query_result = self.message_store.query_named(block_name, "komodo_blockworld/BlockPos", False)
         if (query_result is None):
             rospy.logfatal("{}: Failed to query DB. Aborting...".format(fname))
+            return
 
         else:
 
@@ -214,6 +259,7 @@ class KomodoPicknPlaceComp:
         query_result = self.message_store.query_named(on_block_name, "komodo_blockworld/BlockPos", False)
         if (query_result is None):
             rospy.logfatal("{}: Failed to query DB. Aborting...".format(fname))
+            return
 
         else:
             if (len(query_result) != 1):
@@ -317,9 +363,9 @@ class KomodoPicknPlaceComp:
             rospy.logdebug("{}: Table position count not set, querying database to find it".format(fname))
             # count how many table positions are there (table positions are blocks that are not
             # "on" any other block or in hand)
-            prob_blocks = self.instance_query_client.call("block")
-            on_predicates = self.attribute_query_client.call("on")
-            inhand_predicates = self.attribute_query_client.call("inhand")
+            prob_blocks = self.instance_query_client.call("block", False)
+            on_predicates = self.attribute_query_client.call("on", False)
+            inhand_predicates = self.attribute_query_client.call("inhand", False)
 
             rospy.logdebug("{}: Query results: blocks count: {}, \"on\" count: {}, \"inhand\" count: {}".
                            format(fname, len(prob_blocks.instances), len(on_predicates.attributes),
