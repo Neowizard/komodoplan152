@@ -39,6 +39,7 @@ default_values = {
     "right_finger_released_angle": 1.0,
     "init_left_finger_angle": -0.15,
     "init_right_finger_angle": 0.15,
+    "static_elbow_offset": 0.05,
     "finger_level_offset_factor": 0.1
 }
 
@@ -168,7 +169,7 @@ class KomodoPicknPlaceComp:
             block_pos = query_result[0][0]
             if (block_pos.tablePos == -1 or block_pos.level == -1):
                 rospy.logfatal("{}: Block {} table position is {} and it's level is {}!".
-                               format(fname, block_pos.tablePos, block_pos.level))
+                               format(fname, block_name, block_pos.tablePos, block_pos.level))
 
             actionFeedback = ActionFeedback()
             actionFeedback.action_id = pick_up_msg.action_id
@@ -193,6 +194,11 @@ class KomodoPicknPlaceComp:
             inhand_pos.level = -1
             inhand_pos.tablePos = -1
             self.message_store.update_named(block_name, inhand_pos)
+
+            actionFeedback = ActionFeedback()
+            actionFeedback.action_id = pick_up_msg.action_id
+            actionFeedback.status = "action achieved"
+            self.action_feedback_pub.publish(actionFeedback)
 
     def handle_put_down(self, put_down_msg):
         fname = "{}::{}".format(self.__class__.__name__, self.handle_put_down.__name__)
@@ -240,11 +246,15 @@ class KomodoPicknPlaceComp:
 
             self.apply_effects_to_KMS(block_name, on_block_name, put_down_msg.name)
 
-
             new_block_pos = BlockPos()
             new_block_pos.tablePos = on_block_pos.tablePos
             new_block_pos.level = on_block_pos.level + 1
             self.message_store.update_named(block_name, new_block_pos)
+
+            actionFeedback = ActionFeedback()
+            actionFeedback.action_id = put_down_msg.action_id
+            actionFeedback.status = "action achieved"
+            self.action_feedback_pub.publish(actionFeedback)
 
     def position_arm(self, table_pos, height_level):
         fname = "{}::{}".format(self.__class__.__name__, self.position_arm.__name__)
@@ -252,7 +262,7 @@ class KomodoPicknPlaceComp:
         # Position static elbow (elbow 1)
         static_elbow_publisher = rospy.Publisher("/komodo_1/elbow1_controller/command", Float64, queue_size=10, latch=True)
         static_elbow_msg = Float64()
-        static_elbow_msg.data = 0
+        static_elbow_msg.data = default_values["static_elbow_offset"]
         rospy.logdebug("{}: Moving elbow 1 to 0rad".format(fname))
         static_elbow_publisher.publish(static_elbow_msg)
 
@@ -263,6 +273,7 @@ class KomodoPicknPlaceComp:
         base_angle_msg.data = base_angle+default_values["base_rotation_center_offset"]
         rospy.logdebug("{}: Moving base to n{}rad".format(fname, base_angle))
         base_rot_publisher.publish(base_angle_msg)
+
 
         # Position wrist
         wrist_angle = math.pi/2 + base_angle
@@ -293,6 +304,7 @@ class KomodoPicknPlaceComp:
         shoulder_rot_publisher = rospy.Publisher("/komodo_1/shoulder_controller/command", Float64, queue_size=10, latch=True)
         shoulder_angle_msg = Float64()
         shoulder_angle_msg.data = shoulder_angle
+
         rospy.logdebug("{}: Moving shoulder to {}rad".format(fname, shoulder_angle))
         shoulder_rot_publisher.publish(shoulder_angle_msg)
 
@@ -343,6 +355,13 @@ class KomodoPicknPlaceComp:
         rospy.logdebug("{}: Moving elbow 2 to {}rad".format(fname, elbow_angle_msg.data))
         elbow_rot_publisher.publish(elbow_angle_msg)
 
+        static_elbow_publisher = rospy.Publisher("/komodo_1/elbow1_controller/command", Float64, queue_size=10, latch=True)
+        static_elbow_angle_msg = Float64()
+        static_elbow_angle_msg.data = default_values["static_elbow_offset"]
+        rospy.logdebug("{}: Moving static elbow to {}rad".format(fname, static_elbow_angle_msg.data))
+        static_elbow_publisher.publish(static_elbow_angle_msg)
+
+
     def grip_block(self, level):
         fname = "{}::{}".format(self.__class__.__name__, self.grip_block.__name__)
         # level is 1-based in the DB, but needed as 0-based for calculations
@@ -391,6 +410,9 @@ class KomodoPicknPlaceComp:
         emptyhand_update_type = KnowledgeUpdateServiceRequest.REMOVE_KNOWLEDGE if \
             (action_name == "pick_up") else KnowledgeUpdateServiceRequest.ADD_KNOWLEDGE
 
+        not_emptyhand_update_type = KnowledgeUpdateServiceRequest.ADD_KNOWLEDGE if \
+            (action_name == "pick_up") else KnowledgeUpdateServiceRequest.REMOVE_KNOWLEDGE
+
         onblock_update_type = KnowledgeUpdateServiceRequest.REMOVE_KNOWLEDGE if \
             (action_name == "pick_up") else KnowledgeUpdateServiceRequest.ADD_KNOWLEDGE
 
@@ -400,17 +422,29 @@ class KomodoPicknPlaceComp:
         inhand_update_type = KnowledgeUpdateServiceRequest.ADD_KNOWLEDGE if \
             (action_name == "pick_up") else KnowledgeUpdateServiceRequest.REMOVE_KNOWLEDGE
 
-        # Remove emptyhand predicate
+        # not_emptyhand predicate
+        update_knowledge_request = KnowledgeUpdateServiceRequest()
+        update_knowledge_request.knowledge.knowledge_type = KnowledgeItem.FACT
+        update_knowledge_request.update_type = not_emptyhand_update_type
+        update_knowledge_request.knowledge.attribute_name = "not_emptyhand"
+        update_response = self.update_knowledge_client.call(update_knowledge_request)
+        rospy.logdebug("{}: Updated KMS with {} {}".format(fname, update_knowledge_request.knowledge.attribute_name, update_knowledge_request.update_type))
+        if (update_response.success is not True):
+            rospy.logerr("{}: Could not update KMS with action effect ({} {})".
+                         format(fname, not_emptyhand_update_type, "not_emptyhand"))
+
+        # emptyhand predicate
         update_knowledge_request = KnowledgeUpdateServiceRequest()
         update_knowledge_request.knowledge.knowledge_type = KnowledgeItem.FACT
         update_knowledge_request.update_type = emptyhand_update_type
         update_knowledge_request.knowledge.attribute_name = "emptyhand"
         update_response = self.update_knowledge_client.call(update_knowledge_request)
+        rospy.logdebug("{}: Updated KMS with {} {}".format(fname, update_knowledge_request.knowledge.attribute_name, update_knowledge_request.update_type))
         if (update_response.success is not True):
             rospy.logerr("{}: Could not update KMS with action effect ({} {})".
                          format(fname, emptyhand_update_type, "emptyhand"))
 
-        # Remove (on ?block ?from_block) predicate
+        # (on ?block ?from_block) predicate
         update_knowledge_request = KnowledgeUpdateServiceRequest()
         update_knowledge_request.knowledge.knowledge_type = KnowledgeItem.FACT
         update_knowledge_request.update_type = onblock_update_type
@@ -424,11 +458,12 @@ class KomodoPicknPlaceComp:
         pair.value = other_block_name
         update_knowledge_request.knowledge.values.append(pair)
         self.update_knowledge_client.call(update_knowledge_request)
+        rospy.logdebug("{}: Updated KMS with {} {}".format(fname, update_knowledge_request.knowledge.attribute_name, update_knowledge_request.update_type))
         if (update_response.success is not True):
             rospy.logerr("{}: Could not update KMS with action effect ({} {})".
                          format(fname, onblock_update_type, "on"))
 
-        # Add (clear ?from_block) predicate
+        # (clear ?from_block) predicate
         update_knowledge_request = KnowledgeUpdateServiceRequest()
         update_knowledge_request.knowledge.knowledge_type = KnowledgeItem.FACT
         update_knowledge_request.update_type = clear_update_type
@@ -438,11 +473,12 @@ class KomodoPicknPlaceComp:
         pair.value = other_block_name
         update_knowledge_request.knowledge.values.append(pair)
         self.update_knowledge_client.call(update_knowledge_request)
+        rospy.logdebug("{}: Updated KMS with {} {}".format(fname, update_knowledge_request.knowledge.attribute_name, update_knowledge_request.update_type))
         if (update_response.success is not True):
             rospy.logerr("{}: Could not update KMS with action effect ({} {})".
                          format(fname, clear_update_type, "clear"))
 
-        # Add (inhand ?block) predicate
+        # (inhand ?block) predicate
         update_knowledge_request = KnowledgeUpdateServiceRequest()
         update_knowledge_request.knowledge.knowledge_type = KnowledgeItem.FACT
         update_knowledge_request.update_type = inhand_update_type
@@ -452,6 +488,7 @@ class KomodoPicknPlaceComp:
         pair.value = block_name
         update_knowledge_request.knowledge.values.append(pair)
         self.update_knowledge_client.call(update_knowledge_request)
+        rospy.logdebug("{}: Updated KMS with {} {}".format(fname, update_knowledge_request.knowledge.attribute_name, update_knowledge_request.update_type))
         if (update_response.success is not True):
             rospy.logerr("{}: Could not update KMS with action effect ({} {})".
                          format(fname, inhand_update_type, "inhand"))
