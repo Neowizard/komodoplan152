@@ -44,7 +44,6 @@ default_values = {
     "finger_level_offset_factor": 0.1
 }
 
-current_wrist_pos = None
 
 class KomodoPicknPlaceComp:
     message_store = None
@@ -450,15 +449,16 @@ class KomodoPicknPlaceComp:
         # level is 1-based in the DB, but needed as 0-based for calculations
         level -= 1
 
-        first_finger = "left" if current_wrist_pos < 0 else "right"
-        second_finger = "right" if current_wrist_pos < 0 else "left"
+        current_wrist_pos = rospy.wait_for_message("/komodo_1/wrist_controller/state", JointState, 3)
+        first_finger = "left" if current_wrist_pos.current_pos < 0 else "right"
+        second_finger = "right" if current_wrist_pos.current_pos < 0 else "left"
 
         finger_publisher = rospy.Publisher("/komodo_1/{}_finger_controller/command".format(first_finger), Float64, queue_size=10)
         first_finger_msg = Float64()
         first_finger_msg.data = default_values["init_{}_finger_angle".format(first_finger)] + \
                                0.9 * level * default_values["finger_level_offset_factor"]
         finger_publisher.publish(first_finger_msg)
-        rospy.logdebug("{}: Moving {} finger to {}rad".format(fname, first_finger, first_finger_msg.data))
+        rospy.loginfo("{}: Moving {} finger to {}rad".format(fname, first_finger, first_finger_msg.data))
         rospy.sleep(0.7 * level)
 
         finger_publisher = rospy.Publisher("/komodo_1/{}_finger_controller/command".format(second_finger), Float64, queue_size=10)
@@ -466,14 +466,15 @@ class KomodoPicknPlaceComp:
         second_finger_msg.data = default_values["init_{}_finger_angle".format(second_finger)] + \
                                 level * default_values["finger_level_offset_factor"]
         finger_publisher.publish(second_finger_msg)
-        rospy.logdebug("{}: Moving {} finger to {}rad".format(fname, second_finger, second_finger_msg.data))
+        rospy.loginfo("{}: Moving {} finger to {}rad".format(fname, second_finger, second_finger_msg.data))
 
         self.wait_for_joints(wait_for_fingers=True)
 
     def release_grip(self):
 
-        first_finger = "right" if current_wrist_pos < 0 else "left"
-        second_finger = "left" if current_wrist_pos < 0 else "right"
+        current_wrist_pos = rospy.wait_for_message("/komodo_1/wrist_controller/state", JointState, 3)
+        first_finger = "right" if current_wrist_pos.current_pos < 0 else "left"
+        second_finger = "left" if current_wrist_pos.current_pos < 0 else "right"
 
         finger_publisher = rospy.Publisher("/komodo_1/{}_finger_controller/command".format(first_finger), Float64, queue_size=10,
                                            latch=True)
@@ -604,7 +605,7 @@ class KomodoPicknPlaceComp:
     def wait_for_joints(self, wait_for_base=False, wait_for_shoulder=False, wait_for_elbows=False, wait_for_wrist=False,
                         wait_for_fingers=False, timeout=3, threshold=0.1):
         fname = "{}::{}".format(self.__class__.__name__, self.wait_for_joints.__name__)
-        base_state = rospy.wait_for_message("/komodo_1/base_ratation_controller/state", JointState, timeout)
+        base_state = rospy.wait_for_message("/komodo_1/base_rotation_controller/state", JointState, timeout)
         shoulder_state = rospy.wait_for_message("/komodo_1/shoulder_controller/state", JointState, timeout)
         static_elbow_state = rospy.wait_for_message("/komodo_1/elbow1_controller/state", JointState, timeout)
         elbow_state = rospy.wait_for_message("/komodo_1/elbow2_controller/state", JointState, timeout)
@@ -674,10 +675,6 @@ class KomodoPicknPlaceComp:
 def print_usage():
     print "Usage:\n\t{} <conf file path>".format(sys.argv[0].split("/")[-1])
 
-def update_wrist_pos(wrist_pos_data):
-    current_wrist_pos = wrist_pos_data.position[0]
-    #Not good at all, fix it
-
 if __name__ == '__main__':
     try:
 
@@ -690,8 +687,6 @@ if __name__ == '__main__':
         rospy.init_node("KomodoPickNPlaceComp", anonymous=False, log_level=log_level)
         component = KomodoPicknPlaceComp(conf_file)
         component.debug_level = 1
-
-        rospy.Subscriber("/komodo_1/wrist_controller/state", JointState, update_wrist_pos)
 
         rospy.spin()
 
