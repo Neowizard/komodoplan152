@@ -31,7 +31,7 @@ default_values = {
     "min_base_angle": -0.45,
     "shoulder_max_angle": math.pi / 2,
     "elbow_min_angle": math.pi / 2,
-    "wrist_max_angle": 0,
+    "wrist_max_angle": math.pi / 2,
     "block_height": 4.0,
     "arm_length": 50.0,
     "left_finger_released_angle": -1.0,
@@ -42,6 +42,7 @@ default_values = {
     "finger_level_offset_factor": 0.1
 }
 
+current_wrist_pos = None
 
 class KomodoPicknPlaceComp:
     message_store = None
@@ -53,6 +54,7 @@ class KomodoPicknPlaceComp:
     debug_level = 0
     ready = False
     table_positions_count = -1
+
 
     # TODO: Add timeout checks after long actions like database queries or arm movements
 
@@ -446,35 +448,42 @@ class KomodoPicknPlaceComp:
         # level is 1-based in the DB, but needed as 0-based for calculations
         level -= 1
 
-        finger_publisher = rospy.Publisher("/komodo_1/left_finger_controller/command", Float64, queue_size=10)
-        left_finger_msg = Float64()
-        left_finger_msg.data = default_values["init_left_finger_angle"] + \
+        first_finger = "left" if current_wrist_pos < 0 else "right"
+        second_finger = "right" if current_wrist_pos < 0 else "left"
+
+        finger_publisher = rospy.Publisher("/komodo_1/{}_finger_controller/command".format(first_finger), Float64, queue_size=10)
+        first_finger_msg = Float64()
+        first_finger_msg.data = default_values["init_{}_finger_angle".format(first_finger)] + \
                                0.9 * level * default_values["finger_level_offset_factor"]
-        finger_publisher.publish(left_finger_msg)
-        rospy.logdebug("{}: Moving left finger to {}rad".format(fname, left_finger_msg.data))
+        finger_publisher.publish(first_finger_msg)
+        rospy.logdebug("{}: Moving {} finger to {}rad".format(fname, first_finger, first_finger_msg.data))
         rospy.sleep(0.7 * level)
 
-        finger_publisher = rospy.Publisher("/komodo_1/right_finger_controller/command", Float64, queue_size=10)
-        right_finger_msg = Float64()
-        right_finger_msg.data = default_values["init_right_finger_angle"] + \
+        finger_publisher = rospy.Publisher("/komodo_1/{}_finger_controller/command".format(second_finger), Float64, queue_size=10)
+        second_finger_msg = Float64()
+        second_finger_msg.data = default_values["init_{}_finger_angle".format(second_finger)] + \
                                 level * default_values["finger_level_offset_factor"]
-        finger_publisher.publish(right_finger_msg)
-        rospy.logdebug("{}: Moving right finger to {}rad".format(fname, right_finger_msg.data))
+        finger_publisher.publish(second_finger_msg)
+        rospy.logdebug("{}: Moving {} finger to {}rad".format(fname, second_finger, second_finger_msg.data))
 
     def release_grip(self):
-        finger_publisher = rospy.Publisher("/komodo_1/right_finger_controller/command", Float64, queue_size=10,
+
+        first_finger = "right" if current_wrist_pos < 0 else "left"
+        second_finger = "left" if current_wrist_pos < 0 else "right"
+
+        finger_publisher = rospy.Publisher("/komodo_1/{}_finger_controller/command".format(first_finger), Float64, queue_size=10,
                                            latch=True)
-        right_finger_msg = Float64()
-        right_finger_msg.data = default_values["right_finger_released_angle"]
-        finger_publisher.publish(right_finger_msg)
+        first_finger_msg = Float64()
+        first_finger_msg.data = default_values["{}_finger_released_angle".format(first_finger)]
+        finger_publisher.publish(first_finger_msg)
 
         rospy.sleep(1)
 
-        finger_publisher = rospy.Publisher("/komodo_1/left_finger_controller/command", Float64, queue_size=10,
+        finger_publisher = rospy.Publisher("/komodo_1/{}_finger_controller/command".format(second_finger), Float64, queue_size=10,
                                            latch=True)
-        left_finger_msg = Float64()
-        left_finger_msg.data = default_values["left_finger_released_angle"]
-        finger_publisher.publish(left_finger_msg)
+        second_finger_msg = Float64()
+        second_finger_msg.data = default_values["{}_finger_released_angle".format(second_finger)]
+        finger_publisher.publish(second_finger_msg)
 
     def get_parameter_values(self, parameters, first_param, second_param):
         block_name = None
@@ -589,6 +598,9 @@ class KomodoPicknPlaceComp:
 def print_usage():
     print "Usage:\n\t{} <conf file path>".format(sys.argv[0].split("/")[-1])
 
+def update_wrist_pos(wrist_pos_data):
+    current_wrist_pos = wrist_pos_data.position[0]
+    #Not good at all, fix it
 
 if __name__ == '__main__':
     try:
@@ -602,6 +614,8 @@ if __name__ == '__main__':
         rospy.init_node("KomodoPickNPlaceComp", anonymous=False, log_level=log_level)
         component = KomodoPicknPlaceComp(conf_file)
         component.debug_level = 1
+
+        rospy.Subscriber("/komodo_1/wrist_controller/state", JointState, update_wrist_pos)
 
         rospy.spin()
 
