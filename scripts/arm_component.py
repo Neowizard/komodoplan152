@@ -6,7 +6,6 @@ import sys
 
 from komodo_blockworld.msg import BlockPos
 from std_msgs.msg import Float64
-from geometry_msgs.msg import Twist
 from diagnostic_msgs.msg import KeyValue
 from rosplan_dispatch_msgs.msg import ActionDispatch
 from rosplan_dispatch_msgs.msg import ActionFeedback
@@ -30,8 +29,8 @@ default_values = {
     "raised_shoulder_angle": 1.0,
     "max_base_angle": 0.45,
     "min_base_angle": -0.45,
-    "shoulder_max_angle": math.pi/2,
-    "elbow_min_angle": math.pi/2,
+    "shoulder_max_angle": math.pi / 2,
+    "elbow_min_angle": math.pi / 2,
     "wrist_max_angle": 0,
     "block_height": 4.0,
     "arm_length": 50.0,
@@ -52,7 +51,7 @@ class KomodoPicknPlaceComp:
     update_knowledge_client = None
     dispatch_subscriber = None
     debug_level = 0
-
+    ready = False
     table_positions_count = -1
 
     # TODO: Add timeout checks after long actions like database queries or arm movements
@@ -77,7 +76,98 @@ class KomodoPicknPlaceComp:
         for config in configs:
             default_values[config[0]] = config[1]
 
-    def __init__(self, conf_file=None, pddl_file=None):
+    def update_block_pos(self, block, level, table_pos):
+        block_pos = BlockPos()
+        block_pos.tablePos = table_pos
+        block_pos.level = level
+        query_response = self.message_store.update_named(block, block_pos, upsert=True)
+        return query_response
+
+    def init_db_block_positions(self):
+        fname = "{}::{}".format(self.__class__.__name__, self.init_db_block_positions.__name__)
+
+        prob_blocks = self.instance_query_client.call("block_t")
+        on_predicates = self.attribute_query_client.call("on")
+        tables_blocks = []
+        rospy.logdebug("{}: Got {} blocks and {} \"on\" predicates from KMS".format(fname, len(prob_blocks.instances),
+                                                                                    len(on_predicates.attributes)))
+
+        # Update position of "inhand" block (if such exists)
+        inhand_predicates = self.attribute_query_client.call("inhand")
+        for inhand_pred in inhand_predicates.attributes:
+            block_name = inhand_pred.values[0].value
+            query_response = self.update_block_pos(block_name, -1, -1)
+            if (query_response.success is False):
+                rospy.logfatal("{}: Failed to update block {} position to {} {}. Will not Initialize!".
+                               format(fname, block_name, -1, -1))
+                return False
+            else:
+                rospy.loginfo("{}: Put block {} in hand (Pos {} {})".
+                              format(fname, block_name, -1, -1))
+            prob_blocks.instances.remove(block_name)
+
+        # Looking for tables (block which are not "on" anything) and updating the database
+        current_table_pos = 1
+        for block in prob_blocks.instances:
+            found_on_pred_for_block = False
+            for on_predicate in on_predicates.attributes:
+                for keyValue in on_predicate.values:
+                    if ((keyValue.value == block) and (keyValue.key == "block")):
+                        found_on_pred_for_block = True
+                        break
+                if (found_on_pred_for_block is True):
+                    break
+            if not found_on_pred_for_block:
+                query_response = self.update_block_pos(block, 0, current_table_pos)
+                if (query_response.success is False):
+                    rospy.logfatal("{}: Failed to update block {} position to {} {}. Will not Initialize!".
+                                   format(fname, block, 0, current_table_pos))
+                    return False
+                else:
+                    rospy.loginfo("{}: Positioned table block {} at level {}, tablePos {}".
+                                  format(fname, block, 0, current_table_pos))
+
+                current_table_pos += 1
+                tables_blocks.append(block)
+        prob_blocks.instances = [block for block in prob_blocks.instances if block not in tables_blocks]
+
+        # Updating other blocks (not tables) positions in the database
+        found_blocks = 0
+        while len(prob_blocks.instances) > found_blocks:
+            for block in prob_blocks.instances:
+                for on_predicate in on_predicates.attributes:
+                    block_name = None
+                    on_block_name = None
+                    for keyValue in on_predicate.values:
+                        if ((keyValue.value == block) and (keyValue.key == "block")):
+                            block_name = block
+                        if (keyValue.key == "on_block"):
+                            on_block_name = keyValue.value
+                    if ((block_name is not None) and (on_block_name is not None)):
+                        query_result = self.message_store.query_named(on_block_name, "komodo_blockworld/BlockPos",
+                                                                      False)
+                        if (query_result is None):
+                            rospy.logfatal("{}: Failed to query DB. Aborting...".format(fname))
+                            return False
+                        if (len(query_result) > 1):
+                            rospy.logerr("{}: Found {} blocks named {}. Aborting...".format(fname, len(query_result),
+                                                                                            on_block_name))
+                            return False
+                        if (len(query_result) == 1):
+                            level = query_result[0][0].level + 1
+                            tablePos = query_result[0][0].tablePos
+                            query_response = self.update_block_pos(block_name, level, tablePos)
+                            if (query_response.success is False):
+                                rospy.logfatal("{}: Failed to update block {} position to {} {}. Will not Initialize!".
+                                               format(fname, block_name, level, tablePos))
+                                return False
+                            else:
+                                rospy.loginfo("{}: Positioned block {} at level {}, tablePos {}".
+                                              format(fname, block, level, tablePos))
+                            found_blocks += 1
+                        break
+
+    def __init__(self, conf_file=None):
         fname = "{}::{}".format(self.__class__.__name__, self.__init__.__name__)
 
         self.message_store = mongodb_store.message_store.MessageStoreProxy()
@@ -94,88 +184,12 @@ class KomodoPicknPlaceComp:
 
         self.rise_arm()
         rospy.sleep(1.5)
+
+        if (self.init_db_block_positions() is False):
+            return
+
+        self.ready = True
         rospy.logdebug("{}: Pick&Place Component initialized".format(fname))
-
-        prob_blocks = self.instance_query_client.call("block", False)
-        on_predicates = self.attribute_query_client.call("on", False)
-        prob_tables = list()
-
-        # Looking for tables and updating the database
-        currentTablePos = 1
-        for block in prob_blocks:
-            foundOnPredicateForBlock = False
-            for on_predicate in on_predicates:
-                if on_predicate[0] == block:
-                    foundOnPredicateForBlock = True
-                    break
-            if not foundOnPredicateForBlock:
-                new_block_pos = BlockPos()
-                new_block_pos.tablePos = currentTablePos
-                new_block_pos.level = 0
-                self.message_store.update_named(block,new_block_pos,upsert=True)
-                currentTablePos += 1
-                prob_tables.append(block)
-
-        prob_blocks = [block for block in prob_blocks if block not in prob_tables]
-
-        # Updating other blocks (not tables) positions in the database
-        foundBlocks = 0
-        while len(prob_blocks) > foundBlocks:
-            for block in prob_blocks:
-                for on_predicate in on_predicates:
-                    if on_predicate[0] == block:
-                        query_result = self.message_store.query_named(on_predicate[1], "komodo_blockworld/BlockPos", False)
-                        if (query_result is None):
-                            rospy.logfatal("{}: Failed to query DB. Aborting...".format(fname))
-                            return
-                        if (len(query_result) != 1):
-                            rospy.logerr("{}: Found {} blocks named {}. Aborting...".format(fname, len(query_result), on_predicate[1]))
-                            return
-                        if (len(query_result) == 1):
-                            new_block_pos = BlockPos()
-                            new_block_pos.tablePos = query_result[0][0]
-                            new_block_pos.level = query_result[0][1] + 1
-                            self.message_store.update_named(block,new_block_pos,upsert=True)
-                            foundBlocks += 1
-                    break
-        '''
-        new_block_pos = BlockPos()
-        new_block_pos.tablePos = 1
-        new_block_pos.level = 0
-        self.message_store.update_named("T1", new_block_pos, upsert=True)
-        new_block_pos = BlockPos()
-        new_block_pos.tablePos = 2
-        new_block_pos.level = 0
-        self.message_store.update_named("T2", new_block_pos, upsert=True)
-        new_block_pos = BlockPos()
-        new_block_pos.tablePos = 3
-        new_block_pos.level = 0
-        self.message_store.update_named("T3", new_block_pos, upsert=True)
-        new_block_pos = BlockPos()
-        new_block_pos.tablePos = 4
-        new_block_pos.level = 0
-        self.message_store.update_named("T4", new_block_pos, upsert=True)
-
-        new_block_pos = BlockPos()
-        new_block_pos.tablePos = 1
-        new_block_pos.level = 1
-        self.message_store.update_named("A", new_block_pos, upsert=True)
-
-        new_block_pos = BlockPos()
-        new_block_pos.tablePos = 2
-        new_block_pos.level = 1
-        self.message_store.update_named("B", new_block_pos, upsert=True)
-
-        new_block_pos = BlockPos()
-        new_block_pos.tablePos = 3
-        new_block_pos.level = 1
-        self.message_store.update_named("C", new_block_pos, upsert=True)
-
-        new_block_pos = BlockPos()
-        new_block_pos.tablePos = 4
-        new_block_pos.level = 1
-        self.message_store.update_named("D", new_block_pos, upsert=True)
-        '''
 
     def dispatch_callback(self, action_dispatch_msg):
         fname = "{}::{}".format(self.__class__.__name__, self.dispatch_callback.__name__)
@@ -191,6 +205,10 @@ class KomodoPicknPlaceComp:
 
     def handle_pick_up(self, pick_up_msg):
         fname = "{}::{}".format(self.__class__.__name__, self.handle_pick_up.__name__)
+
+        if (not self.ready):
+            rospy.loginfo("{}: Pick&Place Component not ready to handle commands".format(fname))
+            return
 
         rospy.loginfo("{}: Handling pick up action".format(fname))
 
@@ -224,7 +242,7 @@ class KomodoPicknPlaceComp:
             self.release_grip()
             rospy.sleep(1.5)
 
-            self.position_arm(block_pos.tablePos, block_pos.level*1.1)
+            self.position_arm(block_pos.tablePos, block_pos.level * 1.1)
             rospy.sleep(1.5)
 
             self.grip_block(block_pos.level)
@@ -235,18 +253,28 @@ class KomodoPicknPlaceComp:
             self.apply_effects_to_KMS(block_name, from_block_name, pick_up_msg.name)
 
             # Block is in hand remove it's position from the DB
-            inhand_pos = BlockPos()
-            inhand_pos.level = -1
-            inhand_pos.tablePos = -1
-            self.message_store.update_named(block_name, inhand_pos)
-
-            actionFeedback = ActionFeedback()
-            actionFeedback.action_id = pick_up_msg.action_id
-            actionFeedback.status = "action achieved"
-            self.action_feedback_pub.publish(actionFeedback)
+            query_response = self.update_block_pos(block_name, -1, -1)
+            if (query_response.success is False):
+                rospy.logerr("{}: Failed to updat block {} position to {} {}".
+                             format(fname, block_name, -1, -1))
+                actionFeedback = ActionFeedback()
+                actionFeedback.action_id = pick_up_msg.action_id
+                actionFeedback.status = "action failed"
+                self.action_feedback_pub.publish(actionFeedback)
+            else:
+                rospy.logdebug("{}: Updated block {} position to {} {}".
+                               format(fname, block_name, -1, -1))
+                actionFeedback = ActionFeedback()
+                actionFeedback.action_id = pick_up_msg.action_id
+                actionFeedback.status = "action achieved"
+                self.action_feedback_pub.publish(actionFeedback)
 
     def handle_put_down(self, put_down_msg):
         fname = "{}::{}".format(self.__class__.__name__, self.handle_put_down.__name__)
+
+        if (not self.ready):
+            rospy.loginfo("{}: Pick&Place Component not ready to handle commands".format(fname))
+            return
 
         rospy.loginfo("{}: Handling put down action".format(fname))
 
@@ -279,12 +307,11 @@ class KomodoPicknPlaceComp:
             self.release_grip()
             rospy.sleep(0.5)
 
+            # Re-grip the block at a slightly lower position to stabilize the stack
             self.position_arm(on_block_pos.tablePos, on_block_pos.level + 1.1)
             rospy.sleep(0.2)
-            
             self.grip_block(on_block_pos.level + 1)
             rospy.sleep(2)
-
             self.release_grip()
             rospy.sleep(0.2)
 
@@ -292,80 +319,85 @@ class KomodoPicknPlaceComp:
 
             self.apply_effects_to_KMS(block_name, on_block_name, put_down_msg.name)
 
-            new_block_pos = BlockPos()
-            new_block_pos.tablePos = on_block_pos.tablePos
-            new_block_pos.level = on_block_pos.level + 1
-            self.message_store.update_named(block_name, new_block_pos)
-
-            actionFeedback = ActionFeedback()
-            actionFeedback.action_id = put_down_msg.action_id
-            actionFeedback.status = "action achieved"
-            self.action_feedback_pub.publish(actionFeedback)
+            query_response = self.update_block_pos(block_name, on_block_pos.level + 1, on_block_pos.tablePos)
+            if (query_response.success is False):
+                rospy.logerr("{}: Failed to updat block {} position to {} {}".
+                             format(fname, block_name, on_block_pos.level + 1, on_block_pos.tablePos))
+                actionFeedback = ActionFeedback()
+                actionFeedback.action_id = put_down_msg.action_id
+                actionFeedback.status = "action failed"
+                self.action_feedback_pub.publish(actionFeedback)
+            else:
+                rospy.logdebug("{}: Updated block {} position to {} {}".
+                               format(fname, block_name, on_block_pos.level + 1, on_block_pos.tablePos))
+                actionFeedback = ActionFeedback()
+                actionFeedback.action_id = put_down_msg.action_id
+                actionFeedback.status = "action achieved"
+                self.action_feedback_pub.publish(actionFeedback)
 
     def position_arm(self, table_pos, height_level):
         fname = "{}::{}".format(self.__class__.__name__, self.position_arm.__name__)
 
         # Position static elbow (elbow 1)
-        static_elbow_publisher = rospy.Publisher("/komodo_1/elbow1_controller/command", Float64, queue_size=10, latch=True)
+        static_elbow_pub = rospy.Publisher("/komodo_1/elbow1_controller/command", Float64, queue_size=10, latch=True)
         static_elbow_msg = Float64()
         static_elbow_msg.data = default_values["static_elbow_offset"]
-        rospy.logdebug("{}: Moving elbow 1 to 0rad".format(fname))
-        static_elbow_publisher.publish(static_elbow_msg)
+        rospy.loginfo("{}: Moving elbow 1 to 0rad".format(fname))
+        static_elbow_pub.publish(static_elbow_msg)
 
         # Position Base
         base_angle = self.get_base_angle(table_pos)
-        base_rot_publisher = rospy.Publisher("/komodo_1/base_rotation_controller/command", Float64, queue_size=10, latch=True)
+        base_rot_pub = rospy.Publisher("/komodo_1/base_rotation_controller/command", Float64, queue_size=10, latch=True)
         base_angle_msg = Float64()
-        base_angle_msg.data = base_angle+default_values["base_rotation_center_offset"]
-        rospy.logdebug("{}: Moving base to n{}rad".format(fname, base_angle))
-        base_rot_publisher.publish(base_angle_msg)
-
+        base_angle_msg.data = base_angle + default_values["base_rotation_center_offset"]
+        rospy.loginfo("{}: Moving base to {}rad".format(fname, base_angle))
+        base_rot_pub.publish(base_angle_msg)
 
         # Position wrist
-        wrist_angle = math.pi/2 + base_angle
+        wrist_angle = math.pi / 2 + base_angle
         # Rotate the wrist back 180deg since it can't make a full rotation
         if (wrist_angle > default_values["wrist_max_angle"]):
             wrist_angle -= math.pi
-        wrist_rot_publisher = rospy.Publisher("/komodo_1/wrist_controller/command", Float64, queue_size=10, latch=True)
+        wrist_rot_pub = rospy.Publisher("/komodo_1/wrist_controller/command", Float64, queue_size=10, latch=True)
         wrist_angle_msg = Float64()
         wrist_angle_msg.data = wrist_angle
-        rospy.logdebug("{}: Moving wrist to {}rad".format(fname, wrist_angle))
-        wrist_rot_publisher.publish(wrist_angle_msg)
+        rospy.loginfo("{}: Moving wrist to {}rad".format(fname, wrist_angle))
+        wrist_rot_pub.publish(wrist_angle_msg)
 
         # Compute shoulder values
-        shoulder_angle_ratio = (height_level-1.)*default_values["block_height"]/default_values["arm_length"]
+        shoulder_angle_ratio = (height_level - 1.) * default_values["block_height"] / default_values["arm_length"]
         shoulder_angle = default_values["shoulder_max_angle"] - math.asin(shoulder_angle_ratio)
-
 
         # Position elbow 2
         elbow_angle = math.pi - shoulder_angle
-        elbow_rot_publisher = rospy.Publisher("/komodo_1/elbow2_controller/command", Float64, queue_size=10, latch=True)
+        elbow_rot_pub = rospy.Publisher("/komodo_1/elbow2_controller/command", Float64, queue_size=10, latch=True)
         elbow_angle_msg = Float64()
         elbow_angle_msg.data = elbow_angle
-        rospy.logdebug("{}: Moving elbow 2 to {}rad".format(fname, elbow_angle))
-        elbow_rot_publisher.publish(elbow_angle_msg)
+        rospy.loginfo("{}: Moving elbow 2 to {}rad".format(fname, elbow_angle))
+        elbow_rot_pub.publish(elbow_angle_msg)
 
+        # Allow the joints to reach their target position before lowering the shoulder onto the block stack
         rospy.sleep(2.5)
-        #Position shoulder 
-        shoulder_rot_publisher = rospy.Publisher("/komodo_1/shoulder_controller/command", Float64, queue_size=10, latch=True)
+
+        # Position shoulder
+        shoulder_rot_pub = rospy.Publisher("/komodo_1/shoulder_controller/command", Float64, queue_size=10, latch=True)
         shoulder_angle_msg = Float64()
         shoulder_angle_msg.data = shoulder_angle
-
-        rospy.logdebug("{}: Moving shoulder to {}rad".format(fname, shoulder_angle))
-        shoulder_rot_publisher.publish(shoulder_angle_msg)
+        rospy.loginfo("{}: Moving shoulder to {}rad".format(fname, shoulder_angle))
+        shoulder_rot_pub.publish(shoulder_angle_msg)
 
     def get_base_angle(self, table_pos):
         fname = "{}::{}".format(self.__class__.__name__, self.get_base_angle.__name__)
-        #TODO: Remove to allow actual table positions count computation
-        self.table_positions_count = 4
+        # TODO: Remove to allow actual table positions count computation
+        #self.table_positions_count = 4
 
         if (self.table_positions_count < 0):
             rospy.logdebug("{}: Table position count not set, querying database to find it".format(fname))
             # count how many table positions are there (table positions are blocks that are not
             # "on" any other block or in hand)
-            prob_blocks = self.instance_query_client.call("block", False)
-            on_predicates = self.attribute_query_client.call("on", False)
-            inhand_predicates = self.attribute_query_client.call("inhand", False)
+            prob_blocks = self.instance_query_client.call("block_t")
+            on_predicates = self.attribute_query_client.call("on")
+            inhand_predicates = self.attribute_query_client.call("inhand")
 
             rospy.logdebug("{}: Query results: blocks count: {}, \"on\" count: {}, \"inhand\" count: {}".
                            format(fname, len(prob_blocks.instances), len(on_predicates.attributes),
@@ -377,8 +409,7 @@ class KomodoPicknPlaceComp:
         min_rotation_angle = default_values["min_base_angle"]
         max_rotation_angle = default_values["max_base_angle"]
         base_angle = min_rotation_angle + (max_rotation_angle - min_rotation_angle) * \
-                                     ((table_pos - 1.0) / (self.table_positions_count - 1.0))
-
+                                          ((table_pos - 1.0) / (self.table_positions_count - 1.0))
 
         rospy.logdebug(
             "{}: Calculated base angle (before offset correction): {}. table pos = {}, table position count = {}".
@@ -388,7 +419,8 @@ class KomodoPicknPlaceComp:
 
     def rise_arm(self):
         fname = "{}::{}".format(self.__class__.__name__, self.rise_arm.__name__)
-        shoulder_publisher = rospy.Publisher("/komodo_1/shoulder_controller/command", Float64, queue_size=10, latch=True)
+        shoulder_publisher = rospy.Publisher("/komodo_1/shoulder_controller/command", Float64, queue_size=10,
+                                             latch=True)
         shoulder_angle = Float64()
         shoulder_angle.data = default_values["raised_shoulder_angle"]
         rospy.logdebug("{}: Rising shoulder to {}rad".format(fname, shoulder_angle.data))
@@ -401,7 +433,8 @@ class KomodoPicknPlaceComp:
         rospy.logdebug("{}: Moving elbow 2 to {}rad".format(fname, elbow_angle_msg.data))
         elbow_rot_publisher.publish(elbow_angle_msg)
 
-        static_elbow_publisher = rospy.Publisher("/komodo_1/elbow1_controller/command", Float64, queue_size=10, latch=True)
+        static_elbow_publisher = rospy.Publisher("/komodo_1/elbow1_controller/command", Float64, queue_size=10,
+                                                 latch=True)
         static_elbow_angle_msg = Float64()
         static_elbow_angle_msg.data = default_values["static_elbow_offset"]
         rospy.logdebug("{}: Moving static elbow to {}rad".format(fname, static_elbow_angle_msg.data))
@@ -415,26 +448,30 @@ class KomodoPicknPlaceComp:
 
         finger_publisher = rospy.Publisher("/komodo_1/left_finger_controller/command", Float64, queue_size=10)
         left_finger_msg = Float64()
-        left_finger_msg.data = default_values["init_left_finger_angle"] + 0.9*level*default_values["finger_level_offset_factor"]
+        left_finger_msg.data = default_values["init_left_finger_angle"] + \
+                               0.9 * level * default_values["finger_level_offset_factor"]
         finger_publisher.publish(left_finger_msg)
         rospy.logdebug("{}: Moving left finger to {}rad".format(fname, left_finger_msg.data))
-        rospy.sleep(0.7*level)
+        rospy.sleep(0.7 * level)
 
         finger_publisher = rospy.Publisher("/komodo_1/right_finger_controller/command", Float64, queue_size=10)
         right_finger_msg = Float64()
-        right_finger_msg.data = default_values["init_right_finger_angle"] + level*default_values["finger_level_offset_factor"]
+        right_finger_msg.data = default_values["init_right_finger_angle"] + \
+                                level * default_values["finger_level_offset_factor"]
         finger_publisher.publish(right_finger_msg)
         rospy.logdebug("{}: Moving right finger to {}rad".format(fname, right_finger_msg.data))
 
     def release_grip(self):
-        finger_publisher = rospy.Publisher("/komodo_1/right_finger_controller/command", Float64, queue_size=10, latch=True)
+        finger_publisher = rospy.Publisher("/komodo_1/right_finger_controller/command", Float64, queue_size=10,
+                                           latch=True)
         right_finger_msg = Float64()
         right_finger_msg.data = default_values["right_finger_released_angle"]
         finger_publisher.publish(right_finger_msg)
 
         rospy.sleep(1)
 
-        finger_publisher = rospy.Publisher("/komodo_1/left_finger_controller/command", Float64, queue_size=10, latch=True)
+        finger_publisher = rospy.Publisher("/komodo_1/left_finger_controller/command", Float64, queue_size=10,
+                                           latch=True)
         left_finger_msg = Float64()
         left_finger_msg.data = default_values["left_finger_released_angle"]
         finger_publisher.publish(left_finger_msg)
@@ -448,7 +485,6 @@ class KomodoPicknPlaceComp:
             if (parameters[param_idx].key == second_param):
                 from_block_name = parameters[param_idx].value
         return block_name, from_block_name
-
 
     def apply_effects_to_KMS(self, block_name, other_block_name, action_name):
         fname = "{}::{}".format(self.__class__.__name__, self.apply_effects_to_KMS.__name__)
@@ -473,7 +509,8 @@ class KomodoPicknPlaceComp:
         updated_knowledge.knowledge_type = KnowledgeItem.FACT
         updated_knowledge.attribute_name = "not_emptyhand"
         update_response = self.update_knowledge_client(not_emptyhand_update_type, updated_knowledge)
-        rospy.logdebug("{}: Updated KMS with {} {}".format(fname, updated_knowledge.attribute_name, not_emptyhand_update_type))
+        rospy.logdebug(
+            "{}: Updated KMS with {} {}".format(fname, updated_knowledge.attribute_name, not_emptyhand_update_type))
         if (update_response.success is not True):
             rospy.logerr("{}: Could not update KMS with action effect ({} {})".
                          format(fname, not_emptyhand_update_type, "not_emptyhand"))
@@ -483,7 +520,8 @@ class KomodoPicknPlaceComp:
         updated_knowledge.knowledge_type = KnowledgeItem.FACT
         updated_knowledge.attribute_name = "emptyhand"
         update_response = self.update_knowledge_client(emptyhand_update_type, updated_knowledge)
-        rospy.logdebug("{}: Updated KMS with {} {}".format(fname, updated_knowledge.attribute_name, emptyhand_update_type))
+        rospy.logdebug(
+            "{}: Updated KMS with {} {}".format(fname, updated_knowledge.attribute_name, emptyhand_update_type))
         if (update_response.success is not True):
             rospy.logerr("{}: Could not update KMS with action effect ({} {})".
                          format(fname, emptyhand_update_type, "emptyhand"))
