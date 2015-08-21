@@ -3,6 +3,7 @@ import rospy
 import mongodb_store.message_store
 import math
 import sys
+import time
 
 from komodo_blockworld.msg import BlockPos
 from std_msgs.msg import Float64
@@ -10,6 +11,7 @@ from diagnostic_msgs.msg import KeyValue
 from rosplan_dispatch_msgs.msg import ActionDispatch
 from rosplan_dispatch_msgs.msg import ActionFeedback
 from rosplan_knowledge_msgs.msg import KnowledgeItem
+from dynamixel_msgs.msg import JointState
 
 from rosplan_knowledge_msgs.srv import GetInstanceServiceRequest
 from rosplan_knowledge_msgs.srv import GetInstanceServiceResponse
@@ -185,7 +187,7 @@ class KomodoPicknPlaceComp:
             self.parse_conf_file(conf_file)
 
         self.rise_arm()
-        rospy.sleep(1.5)
+        #rospy.sleep(1.5)
 
         if (self.init_db_block_positions() is False):
             return
@@ -242,13 +244,13 @@ class KomodoPicknPlaceComp:
             self.action_feedback_pub.publish(actionFeedback)
 
             self.release_grip()
-            rospy.sleep(1.5)
+            #rospy.sleep(1.5)
 
             self.position_arm(block_pos.tablePos, block_pos.level * 1.1)
-            rospy.sleep(1.5)
+            #rospy.sleep(1.5)
 
             self.grip_block(block_pos.level)
-            rospy.sleep(2)
+            #rospy.sleep(2)
 
             self.rise_arm()
 
@@ -304,18 +306,15 @@ class KomodoPicknPlaceComp:
             self.action_feedback_pub.publish(actionFeedback)
 
             self.position_arm(on_block_pos.tablePos, on_block_pos.level + 1.5)
-            rospy.sleep(2)
 
             self.release_grip()
-            rospy.sleep(0.5)
 
             # Re-grip the block at a slightly lower position to stabilize the stack
             self.position_arm(on_block_pos.tablePos, on_block_pos.level + 1.1)
-            rospy.sleep(0.2)
             self.grip_block(on_block_pos.level + 1)
-            rospy.sleep(2)
+            #rospy.sleep(2)
             self.release_grip()
-            rospy.sleep(0.2)
+            #rospy.sleep(0.2)
 
             self.rise_arm()
 
@@ -379,7 +378,7 @@ class KomodoPicknPlaceComp:
         elbow_rot_pub.publish(elbow_angle_msg)
 
         # Allow the joints to reach their target position before lowering the shoulder onto the block stack
-        rospy.sleep(2.5)
+        self.wait_for_joints(wait_for_wrist=True, wait_for_base=True)
 
         # Position shoulder
         shoulder_rot_pub = rospy.Publisher("/komodo_1/shoulder_controller/command", Float64, queue_size=10, latch=True)
@@ -388,10 +387,12 @@ class KomodoPicknPlaceComp:
         rospy.loginfo("{}: Moving shoulder to {}rad".format(fname, shoulder_angle))
         shoulder_rot_pub.publish(shoulder_angle_msg)
 
+        self.wait_for_joints(True, True, True, True, True)
+
     def get_base_angle(self, table_pos):
         fname = "{}::{}".format(self.__class__.__name__, self.get_base_angle.__name__)
         # TODO: Remove to allow actual table positions count computation
-        #self.table_positions_count = 4
+        # self.table_positions_count = 4
 
         if (self.table_positions_count < 0):
             rospy.logdebug("{}: Table position count not set, querying database to find it".format(fname))
@@ -442,6 +443,7 @@ class KomodoPicknPlaceComp:
         rospy.logdebug("{}: Moving static elbow to {}rad".format(fname, static_elbow_angle_msg.data))
         static_elbow_publisher.publish(static_elbow_angle_msg)
 
+        self.wait_for_joints(wait_for_shoulder=True)
 
     def grip_block(self, level):
         fname = "{}::{}".format(self.__class__.__name__, self.grip_block.__name__)
@@ -466,6 +468,8 @@ class KomodoPicknPlaceComp:
         finger_publisher.publish(second_finger_msg)
         rospy.logdebug("{}: Moving {} finger to {}rad".format(fname, second_finger, second_finger_msg.data))
 
+        self.wait_for_joints(wait_for_fingers=True)
+
     def release_grip(self):
 
         first_finger = "right" if current_wrist_pos < 0 else "left"
@@ -484,6 +488,9 @@ class KomodoPicknPlaceComp:
         second_finger_msg = Float64()
         second_finger_msg.data = default_values["{}_finger_released_angle".format(second_finger)]
         finger_publisher.publish(second_finger_msg)
+
+        self.wait_for_joints(wait_for_fingers=True)
+
 
     def get_parameter_values(self, parameters, first_param, second_param):
         block_name = None
@@ -593,6 +600,75 @@ class KomodoPicknPlaceComp:
         if (update_response.success is not True):
             rospy.logerr("{}: Could not update KMS with action effect ({} {})".
                          format(fname, inhand_update_type, "inhand"))
+
+    def wait_for_joints(self, wait_for_base=False, wait_for_shoulder=False, wait_for_elbows=False, wait_for_wrist=False,
+                        wait_for_fingers=False, timeout=3, threshold=0.1):
+        fname = "{}::{}".format(self.__class__.__name__, self.wait_for_joints.__name__)
+        base_state = rospy.wait_for_message("/komodo_1/base_ratation_controller/state", JointState, timeout)
+        shoulder_state = rospy.wait_for_message("/komodo_1/shoulder_controller/state", JointState, timeout)
+        static_elbow_state = rospy.wait_for_message("/komodo_1/elbow1_controller/state", JointState, timeout)
+        elbow_state = rospy.wait_for_message("/komodo_1/elbow2_controller/state", JointState, timeout)
+        wrist_state = rospy.wait_for_message("/komodo_1/wrist_controller/state", JointState, timeout)
+        right_finger_state = rospy.wait_for_message("/komodo_1/right_finger_controller/state", JointState, timeout)
+        left_finger_state = rospy.wait_for_message("/komodo_1/left_finger_controller/state", JointState, timeout)
+
+        sleep_duration = 0.1
+        wait_start_time = time.time()
+        if (wait_for_base):
+            while (math.fabs(base_state.goal_pos - base_state.current_pos) > threshold):
+                rospy.sleep(sleep_duration)
+                if (time.time() - wait_start_time > timeout):
+                    rospy.logerr("{}: Timed out while waiting for {}. Skipping joint".format(fname, "Base Rotation"))
+                    break
+                base_state = rospy.wait_for_message("/komodo_1/base_ratation_controller/state", JointState, timeout)
+
+        if (wait_for_shoulder):
+            while (math.fabs(shoulder_state.goal_pos - shoulder_state.current_pos) > threshold):
+                rospy.sleep(sleep_duration)
+                if (time.time() - wait_start_time > timeout):
+                    rospy.logerr("{}: Timed out while waiting for {}. Skipping joint".format(fname, "Shoulder"))
+                    break
+                shoulder_state = rospy.wait_for_message("/komodo_1/shoulder_controller/state", JointState, timeout)
+
+        if (wait_for_elbows):
+            while (math.fabs(static_elbow_state.goal_pos - static_elbow_state.current_pos) > threshold):
+                rospy.sleep(sleep_duration)
+                if (time.time() - wait_start_time > timeout):
+                    rospy.logerr("{}: Timed out while waiting for {}. Skipping joint".format(fname, "Static Elbow"))
+                    break
+                static_elbow_state = rospy.wait_for_message("/komodo_1/elbow1_controller/state", JointState, timeout)
+
+        if (wait_for_elbows):
+            while (math.fabs(elbow_state.goal_pos - elbow_state.current_pos) > threshold):
+                rospy.sleep(sleep_duration)
+                if (time.time() - wait_start_time > timeout):
+                    rospy.logerr("{}: Timed out while waiting for {}. Skipping joint".format(fname, "Elbow"))
+                    break
+                elbow_state = rospy.wait_for_message("/komodo_1/elbow2_controller/state", JointState, timeout)
+
+        if (wait_for_wrist):
+            while (math.fabs(wrist_state.goal_pos - wrist_state.current_pos) > threshold):
+                rospy.sleep(sleep_duration)
+                if (time.time() - wait_start_time > timeout):
+                    rospy.logerr("{}: Timed out while waiting for {}. Skipping joint".format(fname, "Wrist"))
+                    break
+                wrist_state = rospy.wait_for_message("/komodo_1/wrist_controller/state", JointState, timeout)
+
+        if (wait_for_fingers):
+            while (math.fabs(right_finger_state.goal_pos - right_finger_state.current_pos) > threshold):
+                rospy.sleep(sleep_duration)
+                if (time.time() - wait_start_time > timeout):
+                    rospy.logerr("{}: Timed out while waiting for {}. Skipping joint".format(fname, "Right Finger"))
+                    break
+                right_finger_state = rospy.wait_for_message("/komodo_1/right_finger_controller/state", JointState, timeout)
+
+        if (wait_for_fingers):
+            while (math.fabs(left_finger_state.goal_pos - left_finger_state.current_pos) > threshold):
+                rospy.sleep(sleep_duration)
+                if (time.time() - wait_start_time > timeout):
+                    rospy.logerr("{}: Timed out while waiting for {}. Skipping joint".format(fname, "Left Finger"))
+                    break
+                left_finger_state = rospy.wait_for_message("/komodo_1/left_finger_controller/state", JointState, timeout)
 
 
 def print_usage():
